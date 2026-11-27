@@ -12,7 +12,7 @@ class LimiterPlugin;
 class EditorView : public vst3mini::IPlugView {
 public:
     explicit EditorView(LimiterPlugin* owner);
-    ~EditorView() override;
+    virtual ~EditorView();
 
     vst3mini::tresult queryInterface(const vst3mini::FUID& iid, void** obj) override;
     vst3mini::uint32 addRef() override;

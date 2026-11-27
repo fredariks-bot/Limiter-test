@@ -63,7 +63,6 @@ public:
     virtual tresult queryInterface(const FUID& iid, void** obj) = 0;
     virtual uint32 addRef() = 0;
     virtual uint32 release() = 0;
-    virtual ~IUnknown() {}
 };
 
 enum : int32 { kIBSeekSet = 0, kIBSeekCur = 1, kIBSeekEnd = 2 };
