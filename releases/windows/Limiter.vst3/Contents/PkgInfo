@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PkgInfo>
+  <bundle id="com.vibe.limiter-test" name="Limiter" vendor="Vibe" category="Fx" version="1.0.0.0" sdkVersion="VST 3"/>
+</PkgInfo>
