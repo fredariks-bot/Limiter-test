@@ -193,7 +193,8 @@ void testPlugin() {
     CHECK(proc->getBusArrangement(kOutput, 0, got) == kResultOk);
     CHECK(got.numChannels == 2);
     CHECK(proc->canProcessSampleSize(kSample32) == kResultTrue);
-    CHECK(proc->canProcessSampleSize(kSample64) == kResultFalse);
+    CHECK(proc->canProcessSampleSize(kSample64) == kResultTrue);
+    CHECK(proc->canProcessSampleSize(99) == kResultFalse);
 
     ProcessSetup setup;
     setup.processMode = kRealtime;

@@ -27,6 +27,7 @@ Abhängigkeiten):
 - **Stereo-Link**: wahlweise unabhängige Kanäle oder gemeinsame Reduktion
   (Maximum aus L/R), damit das Stereobild nicht kippt.
 - **Metering**: Gain-Reduction in dB und Ausgangs-Peak pro Block.
+- **32- und 64-Bit-float** (`kSample32`/`kSample64`) im Host-Interface.
 
 ### Parameter und Defaults
 
@@ -111,3 +112,7 @@ Smoothing, THD-Messung (Goertzel), Samplerate-Sweep (44.1k–192k), Stereo-Link,
 Blockgrößen-Unabhängigkeit, Stabilität bei Stille/Denormals sowie den kompletten
 VST3-Lebenszyklus (Factory → Component → Processor/Controller → process() inkl.
 Automation mitten im Block mit Sample-Offsets → State-Save/Load → View).
+`limiter_module_test` lädt zusätzlich das fertige Bundle
+(`dist/Limiter.vst3/Contents/x86_64-linux/Limiter.so`) per `dlopen`, holt
+`GetPluginFactory` per `dlsym` und rendert einen Block in 32- und 64-Bit —
+Smoke-Test des echten Plugin-Moduls ohne DAW.

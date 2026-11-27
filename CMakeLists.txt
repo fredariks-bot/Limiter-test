@@ -43,6 +43,7 @@ else()
 endif()
 
 add_library(Limiter MODULE $<TARGET_OBJECTS:limiter_plugin_obj>)
+target_link_libraries(Limiter PRIVATE limiter_dsp)
 set_target_properties(Limiter PROPERTIES
   PREFIX ""
   SUFFIX ""
@@ -72,6 +73,13 @@ add_executable(limiter_tests
 )
 target_link_libraries(limiter_tests PRIVATE limiter_dsp)
 add_test(NAME limiter_tests COMMAND limiter_tests)
+
+if(UNIX AND NOT APPLE)
+  add_executable(limiter_module_test tests/test_module.cpp $<TARGET_OBJECTS:limiter_plugin_obj>)
+  target_link_libraries(limiter_module_test PRIVATE limiter_dsp ${CMAKE_DL_LIBS})
+  add_dependencies(limiter_module_test Limiter)
+  add_test(NAME limiter_module_test COMMAND limiter_module_test $<TARGET_FILE:Limiter>)
+endif()
 
 add_executable(limiter_render tools/render.cpp $<TARGET_OBJECTS:limiter_plugin_obj>)
 target_link_libraries(limiter_render PRIVATE limiter_dsp)

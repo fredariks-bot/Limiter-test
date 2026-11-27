@@ -162,7 +162,8 @@ tresult LimiterPlugin::getBusArrangement(int32 direction, int32 index, BusArrang
 }
 
 tresult LimiterPlugin::canProcessSampleSize(int32 symbolicSampleSize) {
-    return symbolicSampleSize == kSample32 ? kResultTrue : kResultFalse;
+    return (symbolicSampleSize == kSample32 || symbolicSampleSize == kSample64) ? kResultTrue
+                                                                                 : kResultFalse;
 }
 
 tresult LimiterPlugin::setupProcessing(ProcessSetup& setup) {
@@ -182,17 +183,14 @@ tresult LimiterPlugin::setProcessing(bool state) {
 
 tresult LimiterPlugin::process(ProcessData& data) {
     if (data.numSamples <= 0) return kResultOk;
-    if (data.symbolicSampleSize != kSample32) return kResultFalse;
+    if (data.symbolicSampleSize != kSample32 && data.symbolicSampleSize != kSample64)
+        return kResultFalse;
     if (data.numInputs < 1 || data.numOutputs < 1) return kInvalidArgument;
     if (data.numSamples > maxBlock_) return kInvalidArgument;
     int ch = std::min(data.inputs[0].numChannels, data.outputs[0].numChannels);
     if (ch > 2) ch = 2;
     if (ch < 1) return kResultOk;
-
-    float* in[2]  = { data.inputs[0].channelBuffers32[0],
-                      ch > 1 ? data.inputs[0].channelBuffers32[1] : nullptr };
-    float* out[2] = { data.outputs[0].channelBuffers32[0],
-                      ch > 1 ? data.outputs[0].channelBuffers32[1] : nullptr };
+    const bool is64 = data.symbolicSampleSize == kSample64;
 
     struct Event { int32 offset; uint32 id; double value; };
     std::vector<Event> events;
@@ -218,20 +216,32 @@ tresult LimiterPlugin::process(ProcessData& data) {
 
     auto processSegment = [&](int from, int to) {
         if (to <= from) return;
-        const bool bypass = normalized_[kParamBypass] >= 0.5;
-        if (bypass) {
-            for (int c = 0; c < ch; ++c)
-                std::memcpy(out[c] + from, in[c] + from, sizeof(float) * size_t(to - from));
-        } else {
-            for (int c = 0; c < ch; ++c)
-                std::memcpy(block_[c].data(), in[c] + from, sizeof(float) * size_t(to - from));
-            float* dspBuffers[2] = { block_[0].data(), block_[1].data() };
-            dsp_.process(dspBuffers, ch, to - from);
-            for (int c = 0; c < ch; ++c)
-                std::memcpy(out[c] + from, block_[c].data(), sizeof(float) * size_t(to - from));
+        const int len = to - from;
+        for (int c = 0; c < ch; ++c) {
+            if (is64) {
+                const double* inD = data.inputs[0].channelBuffers64[c] + from;
+                for (int i = 0; i < len; ++i) block_[size_t(c)][size_t(i)] = float(inD[i]);
+            } else {
+                std::memcpy(block_[size_t(c)].data(), data.inputs[0].channelBuffers32[c] + from,
+                            sizeof(float) * size_t(len));
+            }
         }
-        float* seg[2] = { out[0] + from, out[1] + from };
-        noteWaveform(seg, ch, to - from);
+        const bool bypass = normalized_[kParamBypass] >= 0.5;
+        if (!bypass) {
+            float* dspBuffers[2] = { block_[0].data(), block_[1].data() };
+            dsp_.process(dspBuffers, ch, len);
+        }
+        for (int c = 0; c < ch; ++c) {
+            if (is64) {
+                double* outD = data.outputs[0].channelBuffers64[c] + from;
+                for (int i = 0; i < len; ++i) outD[i] = double(block_[size_t(c)][size_t(i)]);
+            } else {
+                std::memcpy(data.outputs[0].channelBuffers32[c] + from, block_[size_t(c)].data(),
+                            sizeof(float) * size_t(len));
+            }
+        }
+        float* seg[2] = { block_[0].data(), block_[1].data() };
+        noteWaveform(seg, ch, len);
     };
 
     int pos = 0;
