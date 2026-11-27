@@ -25,9 +25,13 @@ add_library(limiter_plugin_obj OBJECT
   src/plugin/EditorView.cpp
   src/plugin/PluginEntry.cpp
   src/plugin/vst3/Vst3Mini.cpp
+  src/plugin/x11/X11Shim.cpp
 )
 target_link_libraries(limiter_plugin_obj PUBLIC limiter_dsp)
 set_target_properties(limiter_plugin_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(UNIX AND NOT APPLE AND NOT WIN32)
+  target_link_libraries(limiter_plugin_obj PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
 set(VST3_BUNDLE_DIR ${CMAKE_BINARY_DIR}/dist/Limiter.vst3)
 if(WIN32)

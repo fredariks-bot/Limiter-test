@@ -137,6 +137,13 @@ double peakOf(const std::vector<float>& v) {
     return p;
 }
 
+double peakOfRange(const std::vector<float>& v, int from, int to) {
+    double p = 0.0;
+    for (int i = from; i < to && i < int(v.size()); ++i)
+        p = std::max(p, double(std::fabs(v[size_t(i)])));
+    return p;
+}
+
 }
 
 void testPlugin() {
@@ -194,6 +201,7 @@ void testPlugin() {
     setup.maxSamplesPerBlock = 512;
     setup.sampleRate = 44100.0;
     CHECK(proc->setupProcessing(setup) == kResultOk);
+    CHECK(ctrl->setParamNormalized(kParamCeiling, 0.75) == kResultOk);
     CHECK(comp->setActive(true) == kResultOk);
 
     limiter::LimiterDsp ref;
@@ -218,7 +226,6 @@ void testPlugin() {
     CHECK(ctrl->getParamValueByString(kParamCeiling, inStr, parsed) == kResultOk);
     CHECK_NEAR(parsed, 18.0 / 24.0, 1e-9);
 
-    CHECK(ctrl->setParamNormalized(kParamCeiling, 0.75) == kResultOk);
     CHECK_NEAR(ctrl->getParamNormalized(kParamCeiling), 0.75, 1e-12);
     CHECK(ctrl->setParamNormalized(999, 0.5) == kInvalidArgument);
 
@@ -295,6 +302,25 @@ void testPlugin() {
     CHECK(proc->process(data) == kResultOk);
     CHECK(peakOf(outL) > 0.95);
     CHECK(std::memcmp(inL.data(), outL.data(), sizeof(float) * size_t(N)) == 0);
+    CHECK(ctrl->setParamNormalized(kParamBypass, 0.0) == kResultOk);
+
+    comp->setActive(false);
+    comp->setActive(true);
+    TestParamChanges midChanges;
+    midChanges.add(kParamBypass, 256, 1.0);
+    data.inputParameterChanges = &midChanges;
+    for (int i = 0; i < N; ++i) {
+        const float s = float(std::sin(2.0 * kPi * 1000.0 * i / 44100.0));
+        inL[size_t(i)] = s;
+        inR[size_t(i)] = s;
+        outL[size_t(i)] = 0.0f;
+        outR[size_t(i)] = 0.0f;
+    }
+    CHECK(proc->process(data) == kResultOk);
+    data.inputParameterChanges = nullptr;
+    CHECK(peakOfRange(outL, 0, 256) <= std::pow(10.0, -6.0 / 20.0) + 0.05);
+    CHECK(peakOfRange(outL, 256, N) > 0.9);
+    CHECK_NEAR(ctrl->getParamNormalized(kParamBypass), 1.0, 1e-12);
     CHECK(ctrl->setParamNormalized(kParamBypass, 0.0) == kResultOk);
 
     IPlugView* view = ctrl->createView("editor");

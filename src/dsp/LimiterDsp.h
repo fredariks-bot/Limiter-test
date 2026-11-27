@@ -46,13 +46,16 @@ private:
     float symmetricTruePeak(int channel) const;
     void  recomputeCoeffs();
     void  reallocate();
+    void  snapSmoothed();
 
     Parameters params_;
     double sampleRate_ = 44100.0;
     int    lookahead_  = 1;
-    double attackCoef_  = 0.0;
-    double releaseCoef_ = 0.0;
-    double outLin_      = 1.0;
+    double paramCoef_    = 0.0;
+    double attackSlope_  = 0.0;
+    double releaseCoef_  = 0.0;
+    double ceilSmoothDb_ = -1.0;
+    double outSmoothDb_  = 0.0;
     std::vector<float> delay_[2];
     int delayIndex_ = 0;
     std::vector<float> tpHistory_[2];

@@ -70,6 +70,7 @@ void LimiterDsp::reset() {
     gr_[0] = gr_[1] = 0.0;
     grDb_ = 0.0f;
     outPeakLin_ = 0.0f;
+    snapSmoothed();
 }
 
 void LimiterDsp::reallocate() {
@@ -84,14 +85,20 @@ void LimiterDsp::reallocate() {
     windowCounter_[0] = windowCounter_[1] = 0;
     delayIndex_ = 0;
     gr_[0] = gr_[1] = 0.0;
+    snapSmoothed();
 }
 
 void LimiterDsp::recomputeCoeffs() {
     const double attackSec  = std::max(params_.attackMs * 0.001, 0.25 / sampleRate_);
     const double releaseSec = std::max(params_.releaseMs * 0.001, 0.25 / sampleRate_);
-    attackCoef_  = std::exp(-1.0 / (attackSec * sampleRate_));
+    paramCoef_   = std::exp(-1.0 / (0.010 * sampleRate_));
+    attackSlope_ = 60.0 / (attackSec * sampleRate_);
     releaseCoef_ = std::exp(-1.0 / (releaseSec * sampleRate_));
-    outLin_      = std::pow(10.0, params_.outputGainDb / 20.0);
+}
+
+void LimiterDsp::snapSmoothed() {
+    ceilSmoothDb_ = params_.ceilingDb;
+    outSmoothDb_  = params_.outputGainDb;
 }
 
 float LimiterDsp::symmetricTruePeak(int channel) const {
@@ -114,9 +121,12 @@ void LimiterDsp::process(float* const* buffers, int numChannels, int numSamples)
     if (!buffers || numSamples <= 0 || numChannels < 1) return;
     if (numChannels > 2) numChannels = 2;
     outPeakLin_ = 0.0f;
-    const double ceiling = params_.ceilingDb;
     const bool tpOn = params_.truePeak;
     for (int n = 0; n < numSamples; ++n) {
+        ceilSmoothDb_ += (double(params_.ceilingDb) - ceilSmoothDb_) * (1.0 - paramCoef_);
+        outSmoothDb_  += (double(params_.outputGainDb) - outSmoothDb_) * (1.0 - paramCoef_);
+        const double ceiling = ceilSmoothDb_;
+        const double outLin = std::pow(10.0, outSmoothDb_ / 20.0);
         float xin[2] = {0.0f, 0.0f};
         for (int c = 0; c < numChannels; ++c) {
             const float x = buffers[c][n];
@@ -147,16 +157,22 @@ void LimiterDsp::process(float* const* buffers, int numChannels, int numSamples)
             while (!win.empty() && win.front().first <= windowCounter_[c] - int64_t(lookahead_))
                 win.pop_front();
             const double env = win.front().second;
-            const double coef = (env >= gr_[c]) ? attackCoef_ : releaseCoef_;
-            gr_[c] = env + (gr_[c] - env) * coef;
-            if (gr_[c] < 0.0) gr_[c] = 0.0;
+            const double grPrev = gr_[c];
+            double grNew;
+            if (env >= grPrev) {
+                grNew = std::min(env, grPrev + attackSlope_);
+            } else {
+                const double autoFactor = 1.0 + std::min(grPrev, 24.0) / 12.0;
+                grNew = std::max(env, grPrev * (1.0 - (1.0 - releaseCoef_) / autoFactor));
+            }
+            gr_[c] = grNew < 0.0 ? 0.0 : grNew;
         }
         const bool linked = (numChannels == 2 && params_.link == LinkMode::Max);
         const double grLink = std::max(gr_[0], gr_[1]);
         double grApplied = 0.0;
         for (int c = 0; c < numChannels; ++c) {
             const double grA = linked ? grLink : gr_[c];
-            const double gain = std::pow(10.0, -grA / 20.0) * outLin_;
+            const double gain = std::pow(10.0, -grA / 20.0) * outLin;
             const float d = delay_[c][delayIndex_];
             delay_[c][delayIndex_] = xin[c];
             const float y = d * float(gain);

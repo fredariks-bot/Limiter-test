@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace limiter { namespace plugin {
 
@@ -188,38 +189,59 @@ tresult LimiterPlugin::process(ProcessData& data) {
     if (ch > 2) ch = 2;
     if (ch < 1) return kResultOk;
 
+    float* in[2]  = { data.inputs[0].channelBuffers32[0],
+                      ch > 1 ? data.inputs[0].channelBuffers32[1] : nullptr };
+    float* out[2] = { data.outputs[0].channelBuffers32[0],
+                      ch > 1 ? data.outputs[0].channelBuffers32[1] : nullptr };
+
+    struct Event { int32 offset; uint32 id; double value; };
+    std::vector<Event> events;
     if (data.inputParameterChanges) {
         const int32 count = data.inputParameterChanges->getParameterCount();
         for (int32 i = 0; i < count; ++i) {
             IParamValueQueue* q = data.inputParameterChanges->getParameterData(i);
             if (!q) continue;
             const int32 pc = q->getPointCount();
-            if (pc > 0) {
+            for (int32 p = 0; p < pc; ++p) {
                 int32 offset = 0;
                 double value = 0.0;
-                if (q->getPoint(pc - 1, offset, value) == kResultOk)
-                    setParamNormalized(q->getParameterId(), value);
+                if (q->getPoint(p, offset, value) == kResultOk) {
+                    if (offset < 0) offset = 0;
+                    if (offset > data.numSamples) offset = data.numSamples;
+                    events.push_back({offset, q->getParameterId(), value});
+                }
             }
         }
     }
+    std::sort(events.begin(), events.end(),
+              [](const Event& a, const Event& b) { return a.offset < b.offset; });
 
-    float* in[2]  = { data.inputs[0].channelBuffers32[0],
-                      ch > 1 ? data.inputs[0].channelBuffers32[1] : nullptr };
-    float* out[2] = { data.outputs[0].channelBuffers32[0],
-                      ch > 1 ? data.outputs[0].channelBuffers32[1] : nullptr };
-    const bool bypass = normalized_[kParamBypass] >= 0.5;
-    if (bypass) {
-        for (int c = 0; c < ch; ++c)
-            std::memcpy(out[c], in[c], sizeof(float) * size_t(data.numSamples));
-    } else {
-        for (int c = 0; c < ch; ++c)
-            std::memcpy(block_[c].data(), in[c], sizeof(float) * size_t(data.numSamples));
-        float* dspBuffers[2] = { block_[0].data(), block_[1].data() };
-        dsp_.process(dspBuffers, ch, data.numSamples);
-        for (int c = 0; c < ch; ++c)
-            std::memcpy(out[c], block_[c].data(), sizeof(float) * size_t(data.numSamples));
+    auto processSegment = [&](int from, int to) {
+        if (to <= from) return;
+        const bool bypass = normalized_[kParamBypass] >= 0.5;
+        if (bypass) {
+            for (int c = 0; c < ch; ++c)
+                std::memcpy(out[c] + from, in[c] + from, sizeof(float) * size_t(to - from));
+        } else {
+            for (int c = 0; c < ch; ++c)
+                std::memcpy(block_[c].data(), in[c] + from, sizeof(float) * size_t(to - from));
+            float* dspBuffers[2] = { block_[0].data(), block_[1].data() };
+            dsp_.process(dspBuffers, ch, to - from);
+            for (int c = 0; c < ch; ++c)
+                std::memcpy(out[c] + from, block_[c].data(), sizeof(float) * size_t(to - from));
+        }
+        float* seg[2] = { out[0] + from, out[1] + from };
+        noteWaveform(seg, ch, to - from);
+    };
+
+    int pos = 0;
+    for (const Event& ev : events) {
+        if (ev.offset > pos) processSegment(pos, ev.offset);
+        setParamNormalized(ev.id, ev.value);
+        pos = ev.offset;
     }
-    noteWaveform(out, ch, data.numSamples);
+    processSegment(pos, data.numSamples);
+
     grHist_[grWrite_] = dsp_.gainReductionDb();
     grWrite_ = (grWrite_ + 1) % kGrCap;
     if (grCount_ < kGrCap) ++grCount_;

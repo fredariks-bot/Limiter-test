@@ -16,9 +16,14 @@ Abhängigkeiten):
 - **Lookahead**: das Audiosignal läuft durch eine Delay-Line (Länge = Lookahead).
   Gleichzeitig wird über ein gleitendes Fenster (Monotonic-Deque, O(1) amortisiert)
   die nötige Gain-Reduction der nächsten L Samples bestimmt.
-- **Attack/Release in dB-Domäne**: einstufige One-Pole-Glättung der Gain-Reduction
-  in dB — der Attack rampt also während des Lookahead-Fensters, der Release klingt
-  weich ab. Das ist deutlich transparenter als Glättung im linearen Bereich.
+- **Attack/Release in dB-Domäne**: der Attack ist eine **lineare dB-Rampe** (60 dB
+  Vollaussteuerung in Attack-Zeit), sodass die Reduktion exakt zum Peak im
+  Lookahead-Fenster anliegt — true brickwall ohne Overshoot. Der Release ist
+  exponentiell in dB mit **Auto-Release**: je tiefer die aktuelle Reduktion
+  (bis 24 dB), desto länger die effektive Release-Zeit (bis 3×) — weniger Pumping.
+- **Parameter-Smoothing**: Ceiling und Output-Gain werden per Sample mit 10 ms
+  One-Pole geglättet (Zipper-Noise bei Automation wird so vermieden; Snap bei
+  reset/activate).
 - **Stereo-Link**: wahlweise unabhängige Kanäle oder gemeinsame Reduktion
   (Maximum aus L/R), damit das Stereobild nicht kippt.
 - **Metering**: Gain-Reduction in dB und Ausgangs-Peak pro Block.
@@ -90,14 +95,19 @@ scripts/build-windows-vst3.sh /pfad/zu/llvm-mingw-*-ucrt-ubuntu-22.04-x86_64/bin
 ## Editor
 
 Der Editor (480×320, dunkles Design) zeigt oben Buttons (bypass / reset / stereo link /
-true peak) und die Gain-Reduction in dB, darunter den orangenen GR-Verlauf, in der Mitte
-die Ausgangs-Wellenform mit Ceiling-Linie und unten fünf Drehregler
-(Ceiling, Lookahead, Attack, Release, Out Gain). Ziehen verändert die Werte vertikal.
+true peak) und die Gain-Reduction in dB, darunter den orangenen GR-Verlauf mit dB-Skala
+und Peak-Hold, in der Mitte die Ausgangs-Wellenform mit Ceiling-Linie und unten fünf
+Drehregler (Ceiling, Lookahead, Attack, Release, Out Gain). Ziehen verändert die Werte
+vertikal. Die UI ist plattformübergreifend über ein eigenes Painter-Interface
+implementiert: Win32-GDI unter Windows, X11 (per `dlopen`, ohne Build-Dependency)
+unter Linux.
 
 ## Tests
 
 `limiter_tests` prüft u. a.: Passthrough & Latenz, Sine-Limiting auf das Ceiling,
 Impuls-Brickwall, True-Peak-Erkennung von Inter-Sample-Peaks (8× Oversampling),
-kein Fehlalarm bei Sinus, Release-Verlauf, Stereo-Link, Blockgrößen-Unabhängigkeit,
-Output-Gain, Stabilität bei Stille/Denormals sowie den kompletten VST3-Lebenszyklus
-(Factory → Component → Processor/Controller → process() → State-Save/Load → View).
+kein Fehlalarm bei Sinus, Release-Verlauf, Auto-Release bei tiefer GR, Parameter-
+Smoothing, THD-Messung (Goertzel), Samplerate-Sweep (44.1k–192k), Stereo-Link,
+Blockgrößen-Unabhängigkeit, Stabilität bei Stille/Denormals sowie den kompletten
+VST3-Lebenszyklus (Factory → Component → Processor/Controller → process() inkl.
+Automation mitten im Block mit Sample-Offsets → State-Save/Load → View).

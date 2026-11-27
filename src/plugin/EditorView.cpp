@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #include "LimiterPlugin.h"
@@ -14,6 +15,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#define LIMITER_USE_X11 1
+#include "x11/X11Shim.h"
+#include <chrono>
+#include <thread>
+#include <unistd.h>
 #endif
 
 namespace limiter { namespace plugin {
@@ -25,40 +32,248 @@ namespace {
 constexpr int kWinW = 480;
 constexpr int kWinH = 320;
 
+constexpr uint32_t kColBg     = 0x18181A;
+constexpr uint32_t kColPanel  = 0x222226;
+constexpr uint32_t kColPanel2 = 0x1E1E22;
+constexpr uint32_t kColOrange = 0xFF8C1A;
+constexpr uint32_t kColGreen  = 0x7AC74F;
+constexpr uint32_t kColText   = 0xEBEBEB;
+constexpr uint32_t kColDim    = 0x969696;
+constexpr uint32_t kColGrid   = 0x464650;
+constexpr uint32_t kColBtn    = 0x303034;
+constexpr uint32_t kColBtnOn  = 0x406030;
+
+constexpr int kGraphX = 8, kGraphY = 40, kGraphW = 464, kGraphH = 64;
+constexpr int kWaveX = 8, kWaveY = 112, kWaveW = 464, kWaveH = 116;
+constexpr int kKnobY = 262, kKnobR = 24, kKnobSpacing = 92, kKnobX0 = 52;
+constexpr double kPi = 3.14159265358979323846;
+
+struct Btn { int x, y, w, h; };
+constexpr Btn kBtnBypass{8, 8, 68, 20};
+constexpr Btn kBtnReset{80, 8, 60, 20};
+constexpr Btn kBtnLink{336, 8, 68, 20};
+constexpr Btn kBtnTP{408, 8, 64, 20};
+
 struct KnobDef {
     uint32_t id;
     const char* label;
 };
 
 const KnobDef kKnobs[] = {
-    { kParamCeiling,    "Ceiling"   },
-    { kParamLookahead,  "Lookahead" },
-    { kParamAttack,     "Attack"    },
-    { kParamRelease,    "Release"   },
-    { kParamOutputGain, "Out Gain"  },
+    { kParamCeiling,    "CEILING"   },
+    { kParamLookahead,  "LOOKAHEAD" },
+    { kParamAttack,     "ATTACK"    },
+    { kParamRelease,    "RELEASE"   },
+    { kParamOutputGain, "OUT GAIN"  },
 };
 constexpr int kNumKnobs = int(sizeof(kKnobs) / sizeof(kKnobs[0]));
 
-constexpr int kGraphX = 8, kGraphY = 40, kGraphW = 464, kGraphH = 64;
-constexpr int kWaveX = 8, kWaveY = 112, kWaveW = 464, kWaveH = 116;
-constexpr int kKnobY = 268, kKnobR = 24, kKnobSpacing = 92, kKnobX0 = 52;
+struct UiPainter {
+    virtual ~UiPainter() {}
+    virtual void fillRect(int x, int y, int w, int h, uint32_t rgb) = 0;
+    virtual void frameRect(int x, int y, int w, int h, uint32_t rgb) = 0;
+    virtual void line(int x1, int y1, int x2, int y2, uint32_t rgb) = 0;
+    virtual void text(int x, int y, const char* s, uint32_t rgb) = 0;
+    virtual void textCenter(int cx, int y, int w, const char* s, uint32_t rgb) = 0;
+};
 
-[[maybe_unused]] bool inRect(int x, int y, int l, int t, int r, int b) {
-    return x >= l && x < r && y >= t && y < b;
+int knobAt(int x, int y) {
+    for (int i = 0; i < kNumKnobs; ++i) {
+        const int cx = kKnobX0 + i * kKnobSpacing;
+        const int dx = x - cx, dy = y - kKnobY;
+        if (dx * dx + dy * dy <= (kKnobR + 6) * (kKnobR + 6)) return i;
+    }
+    return -1;
+}
+
+int buttonAt(int x, int y) {
+    auto hit = [&](const Btn& b) { return x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h; };
+    if (hit(kBtnBypass)) return 1;
+    if (hit(kBtnReset)) return 2;
+    if (hit(kBtnLink)) return 3;
+    if (hit(kBtnTP)) return 4;
+    return 0;
+}
+
+void circle(UiPainter& p, int cx, int cy, int r, uint32_t rgb) {
+    constexpr int kSeg = 48;
+    int px = cx + r, py = cy;
+    for (int i = 1; i <= kSeg; ++i) {
+        const double a = 2.0 * kPi * i / kSeg;
+        const int nx = cx + int(r * std::cos(a));
+        const int ny = cy + int(r * std::sin(a));
+        p.line(px, py, nx, ny, rgb);
+        px = nx;
+        py = ny;
+    }
+}
+
+void arc(UiPainter& p, int cx, int cy, int r, double a0deg, double a1deg, uint32_t rgb) {
+    constexpr int kSeg = 40;
+    int px = cx + int(r * std::cos(a0deg * kPi / 180.0));
+    int py = cy + int(r * std::sin(a0deg * kPi / 180.0));
+    for (int i = 1; i <= kSeg; ++i) {
+        const double a = (a0deg + (a1deg - a0deg) * i / kSeg) * kPi / 180.0;
+        const int nx = cx + int(r * std::cos(a));
+        const int ny = cy + int(r * std::sin(a));
+        p.line(px, py, nx, ny, rgb);
+        px = nx;
+        py = ny;
+    }
+}
+
+void button(UiPainter& p, const Btn& b, const char* label, bool active) {
+    p.fillRect(b.x, b.y, b.w, b.h, active ? kColBtnOn : kColBtn);
+    p.frameRect(b.x, b.y, b.w, b.h, kColGrid);
+    p.textCenter(b.x + b.w / 2, b.y + 4, b.w, label, active ? kColGreen : kColText);
+}
+
+void drawUi(UiPainter& p, LimiterPlugin* owner, double& grHold) {
+    p.fillRect(0, 0, kWinW, kWinH, kColBg);
+
+    const bool bypass = owner->getParamNormalized(kParamBypass) >= 0.5;
+    const bool link   = owner->getParamNormalized(kParamLink) >= 0.5;
+    const bool tp     = owner->getParamNormalized(kParamTruePeak) >= 0.5;
+    button(p, kBtnBypass, bypass ? "bypass*" : "bypass", bypass);
+    button(p, kBtnReset, "reset", false);
+    char linkLabel[32];
+    std::snprintf(linkLabel, sizeof linkLabel, "link %s", link ? "100" : "off");
+    button(p, kBtnLink, linkLabel, link);
+    button(p, kBtnTP, tp ? "true peak*" : "true peak", tp);
+
+    const double gr = owner->currentGainReductionDb();
+    char grText[32];
+    std::snprintf(grText, sizeof grText, "-%.1f dB", gr);
+    p.text(168, 12, grText, kColOrange);
+    p.text(238, 12, "GR", kColDim);
+
+    p.fillRect(kGraphX, kGraphY, kGraphW, kGraphH, kColPanel);
+    for (int db = 6; db <= 18; db += 6) {
+        const int y = kGraphY + kGraphH - 2 - int(double(db) / 24.0 * (kGraphH - 4));
+        p.line(kGraphX, y, kGraphX + kGraphW, y, kColGrid);
+        char lbl[8];
+        std::snprintf(lbl, sizeof lbl, "%d", db);
+        p.text(kGraphX + kGraphW - 16, y - 6, lbl, kColDim);
+    }
+    const int count = owner->grHistoryCount();
+    const int n = std::min(count, kGraphW);
+    int prevX = kGraphX + kGraphW - 1, prevY = kGraphY + kGraphH - 2;
+    for (int i = 0; i < n; ++i) {
+        const float g = owner->grHistoryAt(n - 1 - i);
+        const int x = kGraphX + kGraphW - 1 - i;
+        const int y = kGraphY + kGraphH - 2 - int(std::min(24.0, double(g)) / 24.0 * (kGraphH - 4));
+        p.line(prevX, prevY, x, y, kColOrange);
+        prevX = x;
+        prevY = y;
+    }
+    if (gr > grHold) grHold = gr;
+    grHold *= 0.995;
+    if (grHold > 0.05) {
+        const int hy = kGraphY + kGraphH - 2 - int(std::min(24.0, grHold) / 24.0 * (kGraphH - 4));
+        p.line(kGraphX, hy, kGraphX + kGraphW, hy, 0x8A5A20);
+    }
+    p.text(kGraphX + 4, kGraphY + 3, "gain reduction", kColDim);
+
+    p.fillRect(kWaveX, kWaveY, kWaveW, kWaveH, kColPanel2);
+    const int midY = kWaveY + kWaveH / 2;
+    p.line(kWaveX, midY, kWaveX + kWaveW, midY, kColGrid);
+    const double ceiling = owner->normalizedParamToPlain(kParamCeiling, owner->getParamNormalized(kParamCeiling));
+    if (ceiling < 0.0) {
+        const int cy = midY - int(std::pow(10.0, ceiling / 20.0) * (kWaveH / 2 - 2));
+        p.line(kWaveX, cy, kWaveX + kWaveW, cy, kColOrange);
+    }
+    std::vector<float> wave(static_cast<size_t>(kWaveW));
+    owner->copyWaveHistory(wave.data(), kWaveW);
+    const int got = std::min(kWaveW, owner->waveHistoryCount());
+    for (int i = 0; i < got; ++i) {
+        const int x = kWaveX + i;
+        const int y = midY - int(std::min(1.0, double(wave[size_t(i)])) * (kWaveH / 2 - 2));
+        p.line(x, midY, x, y, 0xC8C8CD);
+    }
+    char lim[40];
+    std::snprintf(lim, sizeof lim, "%.1f dB limit", ceiling);
+    p.text(kWaveX + 4, kWaveY + 3, lim, kColOrange);
+
+    for (int i = 0; i < kNumKnobs; ++i) {
+        const int cx = kKnobX0 + i * kKnobSpacing;
+        const double v = owner->getParamNormalized(kKnobs[i].id);
+        circle(p, cx, kKnobY, kKnobR, kColGrid);
+        arc(p, cx, kKnobY, kKnobR, 135.0, 135.0 + 270.0 * v, kColGreen);
+        const double a = (135.0 + 270.0 * v) * kPi / 180.0;
+        p.line(cx, kKnobY, cx + int((kKnobR - 5) * std::cos(a)), kKnobY + int((kKnobR - 5) * std::sin(a)), kColText);
+        p.textCenter(cx, kKnobY + kKnobR + 2, 92, kKnobs[i].label, kColDim);
+        const double plain = owner->normalizedParamToPlain(kKnobs[i].id, v);
+        char val[32];
+        std::snprintf(val, sizeof val, "%.2f", plain);
+        p.textCenter(cx, kKnobY + kKnobR + 14, 92, val, kColText);
+    }
 }
 
 }
 
 #if defined(_WIN32)
 
+namespace {
+
+class GdiPainter : public UiPainter {
+public:
+    GdiPainter(HDC dc) : dc_(dc) {
+        font_ = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                            DEFAULT_PITCH, "Segoe UI");
+        oldFont_ = (HFONT)SelectObject(dc_, font_);
+        SetBkMode(dc_, TRANSPARENT);
+    }
+    ~GdiPainter() override {
+        SelectObject(dc_, oldFont_);
+        DeleteObject(font_);
+    }
+    void fillRect(int x, int y, int w, int h, uint32_t rgb) override {
+        RECT r{x, y, x + w, y + h};
+        HBRUSH b = CreateSolidBrush(RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        FillRect(dc_, &r, b);
+        DeleteObject(b);
+    }
+    void frameRect(int x, int y, int w, int h, uint32_t rgb) override {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        HPEN old = (HPEN)SelectObject(dc_, pen);
+        HBRUSH oldB = (HBRUSH)SelectObject(dc_, GetStockObject(NULL_BRUSH));
+        Rectangle(dc_, x, y, x + w, y + h);
+        SelectObject(dc_, old);
+        SelectObject(dc_, oldB);
+        DeleteObject(pen);
+    }
+    void line(int x1, int y1, int x2, int y2, uint32_t rgb) override {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        HPEN old = (HPEN)SelectObject(dc_, pen);
+        MoveToEx(dc_, x1, y1, nullptr);
+        LineTo(dc_, x2, y2);
+        SelectObject(dc_, old);
+        DeleteObject(pen);
+    }
+    void text(int x, int y, const char* s, uint32_t rgb) override {
+        SetTextColor(dc_, RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        RECT r{x, y, x + 300, y + 13};
+        DrawTextA(dc_, s, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+    void textCenter(int cx, int y, int w, const char* s, uint32_t rgb) override {
+        SetTextColor(dc_, RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF));
+        RECT r{cx - w / 2, y, cx + w / 2, y + 13};
+        DrawTextA(dc_, s, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+private:
+    HDC dc_;
+    HFONT font_;
+    HFONT oldFont_;
+};
+
+}
+
 struct EditorView::Impl {
     HWND hwnd = nullptr;
     WNDPROC origProc = nullptr;
     EditorView* self = nullptr;
     void* parent = nullptr;
-    int dragKnob = -1;
-    int startY = 0;
-    double startVal = 0.0;
     UINT_PTR timer = 0;
 
     static LRESULT CALLBACK wndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -67,21 +282,20 @@ struct EditorView::Impl {
         return DefWindowProcA(h, msg, w, l);
     }
 
-    int knobAt(int x, int y) const {
-        for (int i = 0; i < kNumKnobs; ++i) {
-            const int cx = kKnobX0 + i * kKnobSpacing;
-            const int dx = x - cx, dy = y - kKnobY;
-            if (dx * dx + dy * dy <= (kKnobR + 6) * (kKnobR + 6)) return i;
-        }
-        return -1;
-    }
-
-    bool buttonAt(int x, int y, int& which) const {
-        if (inRect(x, y, 8, 8, 76, 28)) { which = 0; return true; }
-        if (inRect(x, y, 80, 8, 140, 28)) { which = 1; return true; }
-        if (inRect(x, y, 336, 8, 404, 28)) { which = 2; return true; }
-        if (inRect(x, y, 408, 8, 472, 28)) { which = 3; return true; }
-        return false;
+    void redraw(HWND h) {
+        HDC hdc = GetDC(h);
+        RECT rc;
+        GetClientRect(h, &rc);
+        HDC mem = CreateCompatibleDC(hdc);
+        HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HBITMAP oldBmp = (HBITMAP)SelectObject(mem, bmp);
+        GdiPainter p(mem);
+        drawUi(p, self->owner_, self->grHold_);
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, oldBmp);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        ReleaseDC(h, hdc);
     }
 
     LRESULT handle(HWND h, UINT msg, WPARAM w, LPARAM l) {
@@ -89,64 +303,26 @@ struct EditorView::Impl {
         case WM_ERASEBKGND:
             return 1;
         case WM_TIMER:
-            InvalidateRect(h, nullptr, FALSE);
+            redraw(h);
             return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(h, &ps);
-            RECT rc;
-            GetClientRect(h, &rc);
-            HDC mem = CreateCompatibleDC(hdc);
-            HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-            HBITMAP oldBmp = (HBITMAP)SelectObject(mem, bmp);
-            draw(mem, rc.right, rc.bottom);
-            BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldBmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
+            BeginPaint(h, &ps);
+            redraw(h);
             EndPaint(h, &ps);
             return 0;
         }
-        case WM_LBUTTONDOWN: {
-            const int x = int(short(LOWORD(l)));
-            const int y = int(short(HIWORD(l)));
-            const int k = knobAt(x, y);
-            if (k >= 0) {
-                dragKnob = k;
-                startY = y;
-                startVal = self->ownerGet(kKnobs[k].id);
-                SetCapture(h);
-                return 0;
-            }
-            int which = -1;
-            if (buttonAt(x, y, which)) {
-                if (which == 0) self->toggleParam(kParamBypass);
-                else if (which == 1) self->resetAll();
-                else if (which == 2) self->toggleParam(kParamLink);
-                else if (which == 3) self->toggleParam(kParamTruePeak);
-                InvalidateRect(h, nullptr, FALSE);
-                return 0;
-            }
+        case WM_LBUTTONDOWN:
+            self->mousePress(int(short(LOWORD(l))), int(short(HIWORD(l))));
+            SetCapture(h);
             return 0;
-        }
-        case WM_MOUSEMOVE: {
-            if (dragKnob >= 0) {
-                const int y = int(short(HIWORD(l)));
-                double v = startVal - double(y - startY) * 0.01;
-                if (v < 0.0) v = 0.0;
-                if (v > 1.0) v = 1.0;
-                self->setParam(kKnobs[dragKnob].id, v);
-                InvalidateRect(h, nullptr, FALSE);
-                return 0;
-            }
+        case WM_MOUSEMOVE:
+            if (w & MK_LBUTTON) self->mouseMove(int(short(HIWORD(l))));
             return 0;
-        }
         case WM_LBUTTONUP:
-            if (dragKnob >= 0) {
-                dragKnob = -1;
-                ReleaseCapture();
-                return 0;
-            }
+            self->mouseRelease();
+            ReleaseCapture();
+            InvalidateRect(h, nullptr, FALSE);
             return 0;
         default:
             break;
@@ -154,169 +330,98 @@ struct EditorView::Impl {
         if (origProc) return CallWindowProcA(origProc, h, msg, w, l);
         return DefWindowProcA(h, msg, w, l);
     }
+};
 
-    void draw(HDC dc, int w, int h) {
-        RECT rc{0, 0, w, h};
-        HBRUSH bg = CreateSolidBrush(RGB(24, 24, 26));
-        FillRect(dc, &rc, bg);
-        DeleteObject(bg);
+#elif defined(LIMITER_USE_X11)
 
-        HFONT font = CreateFontA(11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET,
-                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                 DEFAULT_PITCH, "Segoe UI");
-        HFONT oldFont = (HFONT)SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(235, 235, 235));
+namespace {
 
-        drawButtons(dc);
-        drawGrReadout(dc);
-        drawGraph(dc);
-        drawWave(dc);
-        drawKnobs(dc);
+class X11Painter : public UiPainter {
+public:
+    X11Painter(const x11::Api& x, x11::Display* dpy, x11::Window win, x11::GC gc)
+        : x_(x), dpy_(dpy), win_(win), gc_(gc) {}
+    void setColor(uint32_t rgb) {
+        const unsigned long px = (static_cast<unsigned long>(rgb & 0xFF0000))
+                               | static_cast<unsigned long>(rgb & 0xFF00)
+                               | static_cast<unsigned long>(rgb & 0xFF);
+        x_.XSetForeground(dpy_, gc_, px);
+    }
+    void fillRect(int x, int y, int w, int h, uint32_t rgb) override {
+        setColor(rgb);
+        x_.XFillRectangle(dpy_, win_, gc_, x, y, static_cast<unsigned>(w), static_cast<unsigned>(h));
+    }
+    void frameRect(int x, int y, int w, int h, uint32_t rgb) override {
+        setColor(rgb);
+        x_.XDrawRectangle(dpy_, win_, gc_, x, y, static_cast<unsigned>(w - 1), static_cast<unsigned>(h - 1));
+    }
+    void line(int x1, int y1, int x2, int y2, uint32_t rgb) override {
+        setColor(rgb);
+        x_.XDrawLine(dpy_, win_, gc_, x1, y1, x2, y2);
+    }
+    void text(int x, int y, const char* s, uint32_t rgb) override {
+        setColor(rgb);
+        x_.XDrawString(dpy_, win_, gc_, x, y + 9, s, int(std::strlen(s)));
+    }
+    void textCenter(int cx, int y, int w, const char* s, uint32_t rgb) override {
+        (void)w;
+        const int len = int(std::strlen(s));
+        text(cx - 3 * len, y, s, rgb);
+    }
+private:
+    const x11::Api& x_;
+    x11::Display* dpy_;
+    x11::Window win_;
+    x11::GC gc_;
+};
 
-        SelectObject(dc, oldFont);
-        DeleteObject(font);
+}
+
+struct EditorView::Impl {
+    x11::Api x;
+    x11::Display* dpy = nullptr;
+    x11::Window win = 0;
+    x11::GC gc = nullptr;
+    void* parent = nullptr;
+    std::thread th;
+    std::atomic<bool> running{false};
+    std::chrono::steady_clock::time_point lastDraw{};
+
+    void draw() {
+        X11Painter p(x, dpy, win, gc);
+        drawUi(p, self->owner_, self->grHold_);
+        x.XFlush(dpy);
+        lastDraw = std::chrono::steady_clock::now();
     }
 
-    void drawText(HDC dc, int x, int y, const char* s, COLORREF c) {
-        SetTextColor(dc, c);
-        RECT r{x, y, x + 300, y + 16};
-        DrawTextA(dc, s, -1, &r, DT_LEFT | DT_NOPREFIX);
-    }
-
-    void drawButtonBox(HDC dc, int l, int t, int r, int b, const char* label, bool active) {
-        RECT rc{l, t, r, b};
-        HBRUSH br = CreateSolidBrush(active ? RGB(64, 96, 48) : RGB(48, 48, 52));
-        FillRect(dc, &rc, br);
-        DeleteObject(br);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(90, 90, 96));
-        HPEN oldPen = (HPEN)SelectObject(dc, pen);
-        HBRUSH oldBr = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Rectangle(dc, l, t, r, b);
-        SelectObject(dc, oldPen);
-        SelectObject(dc, oldBr);
-        DeleteObject(pen);
-        SetTextColor(dc, active ? RGB(190, 255, 160) : RGB(220, 220, 220));
-        RECT tr{l, t + 4, r, b};
-        DrawTextA(dc, label, -1, &tr, DT_CENTER | DT_NOPREFIX);
-    }
-
-    void drawButtons(HDC dc) {
-        const bool bypass = self->ownerGet(kParamBypass) >= 0.5;
-        const bool link = self->ownerGet(kParamLink) >= 0.5;
-        const bool tp = self->ownerGet(kParamTruePeak) >= 0.5;
-        drawButtonBox(dc, 8, 8, 76, 28, bypass ? "bypass*" : "bypass", bypass);
-        drawButtonBox(dc, 80, 8, 140, 28, "reset", false);
-        char linkLabel[32];
-        std::snprintf(linkLabel, sizeof linkLabel, "link %s", link ? "100" : "off");
-        drawButtonBox(dc, 336, 8, 404, 28, linkLabel, link);
-        drawButtonBox(dc, 408, 8, 472, 28, tp ? "true peak*" : "true peak", tp);
-    }
-
-    void drawGrReadout(HDC dc) {
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "-%.1f dB", double(self->ownerGr()));
-        drawText(dc, 170, 12, buf, RGB(255, 150, 40));
-        drawText(dc, 240, 12, "GR", RGB(160, 160, 160));
-    }
-
-    void drawGraph(HDC dc) {
-        RECT rc{kGraphX, kGraphY, kGraphX + kGraphW, kGraphY + kGraphH};
-        HBRUSH br = CreateSolidBrush(RGB(34, 34, 38));
-        FillRect(dc, &rc, br);
-        DeleteObject(br);
-        const int count = self->ownerGrCount();
-        const int n = std::min(count, kGraphW);
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 140, 26));
-        HPEN oldPen = (HPEN)SelectObject(dc, pen);
-        MoveToEx(dc, kGraphX, kGraphY + kGraphH, nullptr);
-        for (int i = 0; i < n; ++i) {
-            const float gr = self->ownerGrAt(n - 1 - i);
-            const double frac = std::min(1.0, double(gr) / 24.0);
-            const int y = kGraphY + kGraphH - int(frac * (kGraphH - 2));
-            LineTo(dc, kGraphX + kGraphW - 1 - i, y);
-        }
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
-        drawText(dc, kGraphX + 4, kGraphY + 2, "gain reduction", RGB(150, 150, 150));
-    }
-
-    void drawWave(HDC dc) {
-        RECT rc{kWaveX, kWaveY, kWaveX + kWaveW, kWaveY + kWaveH};
-        HBRUSH br = CreateSolidBrush(RGB(30, 30, 34));
-        FillRect(dc, &rc, br);
-        DeleteObject(br);
-        const int midY = kWaveY + kWaveH / 2;
-        HPEN zeroPen = CreatePen(PS_SOLID, 1, RGB(70, 70, 76));
-        HPEN oldPen = (HPEN)SelectObject(dc, zeroPen);
-        MoveToEx(dc, kWaveX, midY, nullptr);
-        LineTo(dc, kWaveX + kWaveW, midY);
-        const double ceiling = self->ownerPlain(kParamCeiling);
-        if (ceiling < 0.0) {
-            const double frac = std::pow(10.0, ceiling / 20.0);
-            const int cy = midY - int(frac * (kWaveH / 2 - 2));
-            HPEN ceilPen = CreatePen(PS_SOLID, 1, RGB(255, 140, 26));
-            SelectObject(dc, ceilPen);
-            MoveToEx(dc, kWaveX, cy, nullptr);
-            LineTo(dc, kWaveX + kWaveW, cy);
-            SelectObject(dc, zeroPen);
-            DeleteObject(ceilPen);
-        }
-        std::vector<float> wave(kWaveW);
-        const int got = self->ownerWave(wave.data(), kWaveW);
-        HPEN wavePen = CreatePen(PS_SOLID, 1, RGB(200, 200, 205));
-        SelectObject(dc, wavePen);
-        for (int i = 0; i < got; ++i) {
-            const int x = kWaveX + i;
-            const double v = std::min(1.0, double(wave[size_t(i)]));
-            const int y = midY - int(v * (kWaveH / 2 - 2));
-            MoveToEx(dc, x, midY, nullptr);
-            LineTo(dc, x, y);
-        }
-        SelectObject(dc, oldPen);
-        DeleteObject(zeroPen);
-        DeleteObject(wavePen);
-        char lim[32];
-        std::snprintf(lim, sizeof lim, "%.1f dB limit", ceiling);
-        drawText(dc, kWaveX + 4, kWaveY + 2, lim, RGB(255, 140, 26));
-    }
-
-    void drawKnobs(HDC dc) {
-        for (int i = 0; i < kNumKnobs; ++i) {
-            const int cx = kKnobX0 + i * kKnobSpacing;
-            const double v = self->ownerGet(kKnobs[i].id);
-            const double angle = (-225.0 + v * 270.0) * 3.14159265358979323846 / 180.0;
-            HPEN ring = CreatePen(PS_SOLID, 3, RGB(60, 60, 66));
-            HPEN oldPen = (HPEN)SelectObject(dc, ring);
-            HBRUSH oldBr = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-            Ellipse(dc, cx - kKnobR, kKnobY - kKnobR, cx + kKnobR, kKnobY + kKnobR);
-            SelectObject(dc, oldPen);
-            SelectObject(dc, oldBr);
-            DeleteObject(ring);
-            HPEN arc = CreatePen(PS_SOLID, 3, RGB(122, 199, 79));
-            SelectObject(dc, arc);
-            Arc(dc, cx - kKnobR, kKnobY - kKnobR, cx + kKnobR, kKnobY + kKnobR,
-                cx + int(kKnobR * std::cos(angle)), kKnobY - int(kKnobR * std::sin(angle)),
-                cx - kKnobR, kKnobY);
-            SelectObject(dc, oldPen);
-            DeleteObject(arc);
-            HPEN ptr = CreatePen(PS_SOLID, 2, RGB(240, 240, 240));
-            SelectObject(dc, ptr);
-            MoveToEx(dc, cx, kKnobY, nullptr);
-            LineTo(dc, cx + int((kKnobR - 5) * std::cos(angle)), kKnobY - int((kKnobR - 5) * std::sin(angle)));
-            SelectObject(dc, oldPen);
-            DeleteObject(ptr);
-            const double plain = self->ownerPlain(kKnobs[i].id);
-            char val[48];
-            std::snprintf(val, sizeof val, "%.2f", plain);
-            RECT vr{cx - 40, kKnobY + kKnobR + 14, cx + 40, kKnobY + kKnobR + 30};
-            SetTextColor(dc, RGB(220, 220, 220));
-            DrawTextA(dc, val, -1, &vr, DT_CENTER | DT_NOPREFIX);
-            RECT lr{cx - 46, kKnobY + kKnobR + 2, cx + 46, kKnobY + kKnobR + 16};
-            SetTextColor(dc, RGB(150, 150, 150));
-            DrawTextA(dc, kKnobs[i].label, -1, &lr, DT_CENTER | DT_NOPREFIX);
+    void loop(EditorView* selfView) {
+        self = selfView;
+        using namespace std::chrono;
+        while (running.load()) {
+            if (x.XPending(dpy) > 0) {
+                x11::Event ev;
+                x.XNextEvent(dpy, &ev);
+                if (ev.type == x11::Expose) {
+                    draw();
+                } else if (ev.type == x11::ButtonPress) {
+                    selfView->mousePress(ev.button.x, ev.button.y);
+                    draw();
+                } else if (ev.type == x11::MotionNotify) {
+                    if (ev.motion.state & x11::Button1Mask) {
+                        selfView->mouseMove(ev.motion.y);
+                        draw();
+                    }
+                } else if (ev.type == x11::ButtonRelease) {
+                    selfView->mouseRelease();
+                    draw();
+                }
+            } else if (steady_clock::now() - lastDraw > milliseconds(33)) {
+                draw();
+            } else {
+                usleep(3000);
+            }
         }
     }
+    EditorView* self = nullptr;
 };
 
 #else
@@ -328,9 +433,7 @@ struct EditorView::Impl {
 #endif
 
 EditorView::EditorView(LimiterPlugin* owner) : impl_(new Impl), owner_(owner) {
-#if defined(_WIN32)
     impl_->self = this;
-#endif
 }
 
 EditorView::~EditorView() { delete impl_; }
@@ -374,6 +477,23 @@ tresult EditorView::attached(void* parent, const char* type) {
         InvalidateRect(h, nullptr, FALSE);
         return kResultOk;
     }
+#elif defined(LIMITER_USE_X11)
+    if (std::strcmp(type, "X11EmbedWindowID") == 0 && parent) {
+        if (!x11::loadApi(impl_->x)) return kNotImplemented;
+        static std::once_flag threadsOnce;
+        std::call_once(threadsOnce, [&] { if (impl_->x.XInitThreads) impl_->x.XInitThreads(); });
+        impl_->dpy = impl_->x.XOpenDisplay(nullptr);
+        if (!impl_->dpy) return kInternalError;
+        impl_->win = (x11::Window)(uintptr_t)parent;
+        impl_->gc = impl_->x.XCreateGC(impl_->dpy, impl_->win, 0, nullptr);
+        impl_->x.XSelectInput(impl_->dpy, impl_->win,
+                              x11::ExposureMask | x11::ButtonPressMask |
+                              x11::ButtonReleaseMask | x11::PointerMotionMask);
+        impl_->running = true;
+        impl_->th = std::thread([this] { impl_->loop(this); });
+        impl_->draw();
+        return kResultOk;
+    }
 #endif
     impl_->parent = parent;
     return kResultOk;
@@ -386,6 +506,16 @@ tresult EditorView::removed() {
         SetWindowLongPtrA(impl_->hwnd, GWLP_WNDPROC, (LONG_PTR)impl_->origProc);
         SetWindowLongPtrA(impl_->hwnd, GWLP_USERDATA, 0);
         impl_->hwnd = nullptr;
+    }
+#elif defined(LIMITER_USE_X11)
+    if (impl_->dpy) {
+        impl_->running = false;
+        if (impl_->th.joinable()) impl_->th.join();
+        impl_->x.XSelectInput(impl_->dpy, impl_->win, 0);
+        if (impl_->gc) impl_->x.XFreeGC(impl_->dpy, impl_->gc);
+        impl_->x.XCloseDisplay(impl_->dpy);
+        impl_->dpy = nullptr;
+        impl_->gc = nullptr;
     }
 #endif
     impl_->parent = nullptr;
@@ -417,6 +547,33 @@ tresult EditorView::checkSizeConstraint(ViewRect* rect) {
     return kResultOk;
 }
 
+void EditorView::mousePress(int x, int y) {
+    const int k = knobAt(x, y);
+    if (k >= 0) {
+        dragKnob_ = k;
+        dragStartY_ = y;
+        dragStartVal_ = owner_->getParamNormalized(kKnobs[k].id);
+        return;
+    }
+    switch (buttonAt(x, y)) {
+    case 1: toggleParam(kParamBypass); break;
+    case 2: resetAll(); break;
+    case 3: toggleParam(kParamLink); break;
+    case 4: toggleParam(kParamTruePeak); break;
+    default: return;
+    }
+}
+
+void EditorView::mouseMove(int y) {
+    if (dragKnob_ < 0) return;
+    double v = dragStartVal_ - double(y - dragStartY_) * 0.01;
+    if (v < 0.0) v = 0.0;
+    if (v > 1.0) v = 1.0;
+    owner_->setParamNormalized(kKnobs[dragKnob_].id, v);
+}
+
+void EditorView::mouseRelease() { dragKnob_ = -1; }
+
 double EditorView::ownerGet(uint32_t id) const { return owner_->getParamNormalized(id); }
 
 void EditorView::setParam(uint32_t id, double value) { owner_->setParamNormalized(id, value); }
@@ -427,7 +584,9 @@ void EditorView::toggleParam(uint32_t id) {
 
 void EditorView::resetAll() { owner_->resetDsp(); }
 
-double EditorView::ownerPlain(uint32_t id) const { return owner_->normalizedParamToPlain(id, owner_->getParamNormalized(id)); }
+double EditorView::ownerPlain(uint32_t id) const {
+    return owner_->normalizedParamToPlain(id, owner_->getParamNormalized(id));
+}
 
 float EditorView::ownerGr() const { return owner_->currentGainReductionDb(); }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 
 #include "vst3/Vst3Mini.h"
 
@@ -35,6 +36,14 @@ private:
     Impl* impl_;
     LimiterPlugin* owner_;
     std::atomic<vst3mini::uint32> refCount_{1};
+    int dragKnob_ = -1;
+    int dragStartY_ = 0;
+    double dragStartVal_ = 0.0;
+    double grHold_ = 0.0;
+
+    void mousePress(int x, int y);
+    void mouseMove(int y);
+    void mouseRelease();
 
     double ownerGet(uint32_t id) const;
     void   setParam(uint32_t id, double value);

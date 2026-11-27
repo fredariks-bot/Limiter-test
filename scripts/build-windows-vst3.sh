@@ -25,6 +25,7 @@ mkdir -p "$OUT"
     src/plugin/EditorView.cpp \
     src/plugin/PluginEntry.cpp \
     src/plugin/vst3/Vst3Mini.cpp \
+    src/plugin/x11/X11Shim.cpp \
     -luser32 -lgdi32 \
     -o "$OUT/Limiter.vst3"
 
