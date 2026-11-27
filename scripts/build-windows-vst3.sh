@@ -18,7 +18,7 @@ fi
 OUT=releases/windows/Limiter.vst3/Contents/x86_64-win
 mkdir -p "$OUT"
 
-"$CXX" -O2 -std=c++17 -shared -fvisibility=hidden -Wall -Wextra \
+"$CXX" -O2 -std=c++17 -shared -static -static-libgcc -fvisibility=hidden -Wall -Wextra \
     src/dsp/LimiterDsp.cpp \
     src/plugin/Parameters.cpp \
     src/plugin/LimiterPlugin.cpp \
