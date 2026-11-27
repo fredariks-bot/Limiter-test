@@ -81,10 +81,10 @@ tresult LimiterPlugin::getBusInfo(int32 mediaType, int32 direction, int32 index,
         return kInvalidArgument;
     bus.mediaType = kAudio;
     bus.direction = direction;
-    bus.channelCount = 2;
+    bus.channelCount = numChannels_;
+    setTCharString(bus.name, 128, direction == kInput ? "Audio Input" : "Audio Output");
     bus.busType = kMain;
     bus.flags = kDefaultActive;
-    setTCharString(bus.name, 128, direction == kInput ? "Audio Input" : "Audio Output");
     return kResultOk;
 }
 
@@ -145,19 +145,29 @@ tresult LimiterPlugin::setState(IStream* state) {
     return kResultOk;
 }
 
-tresult LimiterPlugin::setBusArrangements(int32 numIns, int32 numOuts, BusArrangement* inputs, BusArrangement* outputs) {
+static int countChannels(uint64 arr) {
+    int n = 0;
+    while (arr) {
+        n += int(arr & 1ull);
+        arr >>= 1;
+    }
+    return n;
+}
+
+tresult LimiterPlugin::setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
+                                          SpeakerArrangement* outputs, int32 numOuts) {
     if (numIns != 1 || numOuts != 1 || !inputs || !outputs) return kResultFalse;
-    if (inputs[0].numChannels < 1 || inputs[0].numChannels > 2) return kResultFalse;
-    if (outputs[0].numChannels < 1 || outputs[0].numChannels > 2) return kResultFalse;
-    numChannels_ = inputs[0].numChannels;
+    const int inCh = countChannels(inputs[0]);
+    const int outCh = countChannels(outputs[0]);
+    if (inCh < 1 || inCh > 2 || outCh < 1 || outCh > 2) return kResultFalse;
+    numChannels_ = inCh;
+    speakerArr_ = outputs[0];
     return kResultTrue;
 }
 
-tresult LimiterPlugin::getBusArrangement(int32 direction, int32 index, BusArrangement& arr) {
+tresult LimiterPlugin::getBusArrangement(int32 direction, int32 index, SpeakerArrangement& arr) {
     if ((direction != kInput && direction != kOutput) || index != 0) return kInvalidArgument;
-    arr.mainChannel = 0;
-    arr.numChannels = numChannels_;
-    arr.type = kMain;
+    arr = speakerArr_;
     return kResultOk;
 }
 
@@ -305,7 +315,11 @@ uint32 LimiterPlugin::getLatencySamples() {
     return uint32(std::max(0, dsp_.lookaheadSamples()));
 }
 
+uint32 LimiterPlugin::getTailSamples() { return 0; }
+
 tresult LimiterPlugin::setComponentState(IStream*) { return kResultOk; }
+
+tresult LimiterPlugin::setComponentHandler(IComponentHandler*) { return kResultOk; }
 
 int32 LimiterPlugin::getParameterCount() { return kNumParams; }
 
@@ -318,8 +332,8 @@ tresult LimiterPlugin::getParameterInfo(int32 paramIndex, ParameterInfo& info) {
     setTCharString(info.units, 128, d.units);
     info.stepCount = d.discrete ? (d.stepCount - 1) : 0;
     info.defaultNormalizedValue = plainToNormalized(paramIndex, d.defaultValue);
-    info.unitID = kRootUnitId;
-    info.flags = kCanAutomate | (d.discrete ? kIsList : 0);
+    info.unitId = kRootUnitId;
+    info.flags = kCanAutomate | (d.discrete ? kIsList : 0) | (d.id == kParamBypass ? kIsBypass : 0);
     return kResultOk;
 }
 
@@ -343,7 +357,7 @@ tresult LimiterPlugin::getParamStringByValue(ParamID id, double valueNormalized,
     return kResultOk;
 }
 
-tresult LimiterPlugin::getParamValueByString(ParamID id, const TChar* string, double& valueNormalized) {
+tresult LimiterPlugin::getParamValueByString(ParamID id, TChar* string, ParamValue& valueNormalized) {
     const int idx = findParamIndex(id);
     if (idx < 0 || !string) return kInvalidArgument;
     char buf[64];
@@ -357,12 +371,12 @@ tresult LimiterPlugin::getParamValueByString(ParamID id, const TChar* string, do
     return kResultOk;
 }
 
-double LimiterPlugin::normalizedParamToPlain(ParamID id, double valueNormalized) {
+ParamValue LimiterPlugin::normalizedParamToPlain(ParamID id, double valueNormalized) {
     const int idx = findParamIndex(id);
     return idx < 0 ? 0.0 : normalizedToPlain(idx, valueNormalized);
 }
 
-double LimiterPlugin::plainParamToNormalized(ParamID id, double plainValue) {
+ParamValue LimiterPlugin::plainParamToNormalized(ParamID id, double plainValue) {
     const int idx = findParamIndex(id);
     return idx < 0 ? 0.0 : plainToNormalized(idx, plainValue);
 }
@@ -377,7 +391,7 @@ tresult LimiterPlugin::setParamNormalized(ParamID id, double value) {
     return kResultOk;
 }
 
-double LimiterPlugin::getParamNormalized(ParamID id) {
+ParamValue LimiterPlugin::getParamNormalized(ParamID id) {
     const int idx = findParamIndex(id);
     return idx < 0 ? 0.0 : normalized_[idx];
 }
@@ -419,7 +433,7 @@ tresult LimiterFactory::getFactoryInfo(PFactoryInfo* info) {
     copyAscii(info->vendor, sizeof info->vendor, "Vibe");
     copyAscii(info->url, sizeof info->url, "");
     copyAscii(info->email, sizeof info->email, "");
-    info->flags = 0;
+    info->flags = kFactoryUnicode;
     return kResultOk;
 }
 

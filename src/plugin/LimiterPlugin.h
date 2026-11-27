@@ -37,28 +37,30 @@ public:
     vst3mini::tresult setState(vst3mini::IStream* state) override;
     vst3mini::tresult getState(vst3mini::IStream* state) override;
 
-    vst3mini::tresult setBusArrangements(vst3mini::int32 numIns, vst3mini::int32 numOuts,
-                                         vst3mini::BusArrangement* inputs,
-                                         vst3mini::BusArrangement* outputs) override;
+    vst3mini::tresult setBusArrangements(vst3mini::SpeakerArrangement* inputs, vst3mini::int32 numIns,
+                                         vst3mini::SpeakerArrangement* outputs,
+                                         vst3mini::int32 numOuts) override;
     vst3mini::tresult getBusArrangement(vst3mini::int32 direction, vst3mini::int32 index,
-                                        vst3mini::BusArrangement& arr) override;
+                                        vst3mini::SpeakerArrangement& arr) override;
     vst3mini::tresult canProcessSampleSize(vst3mini::int32 symbolicSampleSize) override;
+    vst3mini::uint32 getLatencySamples() override;
     vst3mini::tresult setupProcessing(vst3mini::ProcessSetup& setup) override;
     vst3mini::tresult setProcessing(bool state) override;
     vst3mini::tresult process(vst3mini::ProcessData& data) override;
-    vst3mini::uint32 getLatencySamples() override;
+    vst3mini::uint32 getTailSamples() override;
 
     vst3mini::tresult setComponentState(vst3mini::IStream* state) override;
     vst3mini::int32 getParameterCount() override;
     vst3mini::tresult getParameterInfo(vst3mini::int32 paramIndex, vst3mini::ParameterInfo& info) override;
-    vst3mini::tresult getParamStringByValue(vst3mini::ParamID id, double valueNormalized,
+    vst3mini::tresult getParamStringByValue(vst3mini::ParamID id, vst3mini::ParamValue valueNormalized,
                                             vst3mini::TChar* string) override;
-    vst3mini::tresult getParamValueByString(vst3mini::ParamID id, const vst3mini::TChar* string,
-                                            double& valueNormalized) override;
-    double normalizedParamToPlain(vst3mini::ParamID id, double valueNormalized) override;
-    double plainParamToNormalized(vst3mini::ParamID id, double plainValue) override;
-    vst3mini::tresult setParamNormalized(vst3mini::ParamID id, double value) override;
-    double getParamNormalized(vst3mini::ParamID id) override;
+    vst3mini::tresult getParamValueByString(vst3mini::ParamID id, vst3mini::TChar* string,
+                                            vst3mini::ParamValue& valueNormalized) override;
+    vst3mini::ParamValue normalizedParamToPlain(vst3mini::ParamID id, vst3mini::ParamValue valueNormalized) override;
+    vst3mini::ParamValue plainParamToNormalized(vst3mini::ParamID id, vst3mini::ParamValue plainValue) override;
+    vst3mini::ParamValue getParamNormalized(vst3mini::ParamID id) override;
+    vst3mini::tresult setParamNormalized(vst3mini::ParamID id, vst3mini::ParamValue value) override;
+    vst3mini::tresult setComponentHandler(vst3mini::IComponentHandler* handler) override;
     vst3mini::IPlugView* createView(const char* name) override;
 
     void  resetDsp();
@@ -81,6 +83,7 @@ private:
     double sampleRate_ = 44100.0;
     vst3mini::int32 maxBlock_ = 512;
     vst3mini::int32 numChannels_ = 2;
+    vst3mini::SpeakerArrangement speakerArr_ = vst3mini::kSpeakerStereo;
     double normalized_[kNumParams] = {};
     Parameters dspParams_;
     LimiterDsp dsp_;

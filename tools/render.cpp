@@ -80,9 +80,9 @@ int main(int argc, char** argv) {
     comp->queryInterface(kIAudioProcessorIID, reinterpret_cast<void**>(&proc));
     comp->queryInterface(kIEditControllerIID, reinterpret_cast<void**>(&ctrl));
     comp->initialize(nullptr);
-    BusArrangement inArr{0, 2, kMain};
-    BusArrangement outArr{0, 2, kMain};
-    proc->setBusArrangements(1, 1, &inArr, &outArr);
+    SpeakerArrangement inArr = kSpeakerStereo;
+    SpeakerArrangement outArr = kSpeakerStereo;
+    proc->setBusArrangements(&inArr, 1, &outArr, 1);
     ProcessSetup setup;
     setup.processMode = kRealtime;
     setup.symbolicSampleSize = kSample32;

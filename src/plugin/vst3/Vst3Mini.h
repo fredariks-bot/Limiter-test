@@ -18,9 +18,13 @@ using tresult = int32;
 using TChar   = char16_t;
 using ParamID = uint32;
 using UnitID  = int32;
+using ParamValue = double;
+using SampleRate = double;
+using SpeakerArrangement = uint64;
 
 enum : tresult {
     kResultOk         = 0,
+    kResultTrue       = 0,
     kResultFalse      = 1,
     kInvalidArgument  = 2,
     kNotImplemented   = 3,
@@ -28,19 +32,22 @@ enum : tresult {
     kNoInterface      = 5
 };
 
-constexpr tresult kResultTrue = tresult(0x40000000);
-
-constexpr int32 fourcc(char a, char b, char c, char d) {
-    return int32(uint32(uint8(a)) | (uint32(uint8(b)) << 8) | (uint32(uint8(c)) << 16) | (uint32(uint8(d)) << 24));
-}
-
-inline constexpr int32 kAudio = fourcc('A', 'u', 'd', 'o');
-inline constexpr int32 kEvent = fourcc('E', 'v', 'n', 't');
-
+enum : int32 { kAudio = 0, kEvent = 1 };
 enum : int32 { kInput = 0, kOutput = 1 };
 enum : int32 { kMain = 0, kAux = 1 };
 enum : int32 { kSample32 = 0, kSample64 = 1 };
 enum : int32 { kRealtime = 0, kPrefetch = 1, kOffline = 2 };
+enum : int32 { kSimple = 0, kAdvanced = 1, kOfflineProcessing = 2 };
+
+enum : SpeakerArrangement {
+    kSpeakerL = 1ull << 0,
+    kSpeakerR = 1ull << 1,
+    kSpeakerM = 1ull << 19
+};
+enum : SpeakerArrangement {
+    kSpeakerMono   = kSpeakerM,
+    kSpeakerStereo = kSpeakerL | kSpeakerR
+};
 
 struct FUID {
     uint8 data[16];
@@ -79,8 +86,8 @@ class IParamValueQueue : public IUnknown {
 public:
     virtual ParamID getParameterId() = 0;
     virtual int32 getPointCount() = 0;
-    virtual tresult getPoint(int32 index, int32& sampleOffset, double& value) = 0;
-    virtual tresult addPoint(int32 sampleOffset, double value, int32& index) = 0;
+    virtual tresult getPoint(int32 index, int32& sampleOffset, ParamValue& value) = 0;
+    virtual tresult addPoint(int32 sampleOffset, ParamValue value, int32& index) = 0;
 };
 
 class IParameterChanges : public IUnknown {
@@ -93,6 +100,7 @@ public:
 class IEventList : public IUnknown {};
 class IProcessContext : public IUnknown {};
 class IPlugFrame : public IUnknown {};
+class IComponentHandler : public IUnknown {};
 
 struct ViewRect {
     int32 left = 0, top = 0, right = 0, bottom = 0;
@@ -106,21 +114,15 @@ struct BusInfo {
     int32 mediaType = 0;
     int32 direction = 0;
     int32 channelCount = 0;
+    TChar name[128] = {};
     int32 busType = 0;
     uint32 flags = 0;
-    TChar name[128] = {};
 };
 
 struct RoutingInfo {
     int32 mediaType = 0;
     int32 busIndex = 0;
     int32 channel = 0;
-};
-
-struct BusArrangement {
-    int32 mainChannel = 0;
-    int32 numChannels = 0;
-    int32 type = 0;
 };
 
 struct AudioBusBuffers {
@@ -136,7 +138,7 @@ struct ProcessSetup {
     int32 processMode = 0;
     int32 symbolicSampleSize = 0;
     int32 maxSamplesPerBlock = 0;
-    double sampleRate = 0.0;
+    SampleRate sampleRate = 0.0;
 };
 
 struct ProcessData {
@@ -147,19 +149,20 @@ struct ProcessData {
     int32 numOutputs = 0;
     AudioBusBuffers* inputs = nullptr;
     AudioBusBuffers* outputs = nullptr;
-    IEventList* inputEvents = nullptr;
-    IEventList* outputEvents = nullptr;
     IParameterChanges* inputParameterChanges = nullptr;
     IParameterChanges* outputParameterChanges = nullptr;
+    IEventList* inputEvents = nullptr;
+    IEventList* outputEvents = nullptr;
     IProcessContext* processContext = nullptr;
 };
 
 enum : UnitID { kRootUnitId = 0 };
 
 enum : int32 {
-    kCanAutomate = 1 << 1,
-    kIsReadOnly  = 1 << 2,
-    kIsList      = 1 << 3
+    kCanAutomate = 1 << 0,
+    kIsReadOnly  = 1 << 1,
+    kIsList      = 1 << 3,
+    kIsBypass    = 1 << 16
 };
 
 struct ParameterInfo {
@@ -168,8 +171,8 @@ struct ParameterInfo {
     TChar shortTitle[128] = {};
     TChar units[128] = {};
     int32 stepCount = 0;
-    double defaultNormalizedValue = 0.0;
-    UnitID unitID = 0;
+    ParamValue defaultNormalizedValue = 0.0;
+    UnitID unitId = 0;
     int32 flags = 0;
 };
 
@@ -194,13 +197,15 @@ public:
 
 class IAudioProcessor : public IUnknown {
 public:
-    virtual tresult setBusArrangements(int32 numIns, int32 numOuts, BusArrangement* inputs, BusArrangement* outputs) = 0;
-    virtual tresult getBusArrangement(int32 direction, int32 index, BusArrangement& arr) = 0;
+    virtual tresult setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
+                                       SpeakerArrangement* outputs, int32 numOuts) = 0;
+    virtual tresult getBusArrangement(int32 direction, int32 index, SpeakerArrangement& arr) = 0;
     virtual tresult canProcessSampleSize(int32 symbolicSampleSize) = 0;
+    virtual uint32 getLatencySamples() = 0;
     virtual tresult setupProcessing(ProcessSetup& setup) = 0;
     virtual tresult setProcessing(bool state) = 0;
     virtual tresult process(ProcessData& data) = 0;
-    virtual uint32 getLatencySamples() = 0;
+    virtual uint32 getTailSamples() = 0;
 };
 
 class IPlugView : public IUnknown {
@@ -226,16 +231,18 @@ public:
     virtual tresult getState(IStream* state) = 0;
     virtual int32 getParameterCount() = 0;
     virtual tresult getParameterInfo(int32 paramIndex, ParameterInfo& info) = 0;
-    virtual tresult getParamStringByValue(ParamID id, double valueNormalized, TChar* string) = 0;
-    virtual tresult getParamValueByString(ParamID id, const TChar* string, double& valueNormalized) = 0;
-    virtual double normalizedParamToPlain(ParamID id, double valueNormalized) = 0;
-    virtual double plainParamToNormalized(ParamID id, double plainValue) = 0;
-    virtual tresult setParamNormalized(ParamID id, double value) = 0;
-    virtual double getParamNormalized(ParamID id) = 0;
+    virtual tresult getParamStringByValue(ParamID id, ParamValue valueNormalized, TChar* string) = 0;
+    virtual tresult getParamValueByString(ParamID id, TChar* string, ParamValue& valueNormalized) = 0;
+    virtual ParamValue normalizedParamToPlain(ParamID id, ParamValue valueNormalized) = 0;
+    virtual ParamValue plainParamToNormalized(ParamID id, ParamValue plainValue) = 0;
+    virtual ParamValue getParamNormalized(ParamID id) = 0;
+    virtual tresult setParamNormalized(ParamID id, ParamValue value) = 0;
+    virtual tresult setComponentHandler(IComponentHandler* handler) = 0;
     virtual IPlugView* createView(const char* name) = 0;
 };
 
 enum : int32 { kManyInstances = 0x7FFFFFFF };
+enum : int32 { kFactoryUnicode = 1 << 4 };
 
 struct PFactoryInfo {
     char vendor[64] = {};

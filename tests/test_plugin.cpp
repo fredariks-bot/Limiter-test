@@ -186,12 +186,13 @@ void testPlugin() {
     CHECK(comp->getControllerClassId(ctrlId) == kResultOk);
     CHECK(ctrlId == kLimiterClassID);
 
-    BusArrangement inArr{0, 2, kMain};
-    BusArrangement outArr{0, 2, kMain};
-    CHECK(proc->setBusArrangements(1, 1, &inArr, &outArr) == kResultTrue);
-    BusArrangement got;
+    SpeakerArrangement inArr = kSpeakerStereo;
+    SpeakerArrangement outArr = kSpeakerStereo;
+    CHECK(proc->setBusArrangements(&inArr, 1, &outArr, 1) == kResultTrue);
+    SpeakerArrangement got = 0;
     CHECK(proc->getBusArrangement(kOutput, 0, got) == kResultOk);
-    CHECK(got.numChannels == 2);
+    CHECK(got == kSpeakerStereo);
+    CHECK(got == kSpeakerStereo);
     CHECK(proc->canProcessSampleSize(kSample32) == kResultTrue);
     CHECK(proc->canProcessSampleSize(kSample64) == kResultTrue);
     CHECK(proc->canProcessSampleSize(99) == kResultFalse);

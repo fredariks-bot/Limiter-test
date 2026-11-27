@@ -55,9 +55,9 @@ int main(int argc, char** argv) {
     CHECK(proc && ctrl);
     CHECK(comp->initialize(nullptr) == kResultOk);
 
-    BusArrangement inArr{0, 2, kMain};
-    BusArrangement outArr{0, 2, kMain};
-    CHECK(proc->setBusArrangements(1, 1, &inArr, &outArr) == kResultTrue);
+    SpeakerArrangement inArr = kSpeakerStereo;
+    SpeakerArrangement outArr = kSpeakerStereo;
+    CHECK(proc->setBusArrangements(&inArr, 1, &outArr, 1) == kResultTrue);
     CHECK(proc->canProcessSampleSize(kSample32) == kResultTrue);
     CHECK(proc->canProcessSampleSize(kSample64) == kResultTrue);
     ProcessSetup setup;
